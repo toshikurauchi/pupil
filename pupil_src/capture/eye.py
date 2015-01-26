@@ -21,6 +21,7 @@ from methods import *
 from uvc_capture import autoCreateCapture, FileCaptureError, EndofVideoFileError, CameraCaptureError
 from calibrate import get_map_from_cloud
 from pupil_detectors import Canny_Detector,MSER_Detector,Blob_Detector
+from planarization import eye_model_3d
 
 def eye(g_pool,cap_src,cap_size):
     """
@@ -243,6 +244,13 @@ def eye(g_pool,cap_src,cap_size):
 
         # pupil ellipse detection
         result = pupil_detector.detect(frame,user_roi=u_r,visualize=bar.display.value == 2)
+        # planarize pupil if model is available
+        eye_model3d = g_pool.objs['eye_model3d']
+        if result['norm_pupil'] is not None and eye_model3d is not None and result.has_key('axes'):
+            ellipse = (result['center'], result['axes'], result['angle'])
+            pp, pupil3d = eye_model3d.planarize(ellipse)
+            result['planarized_pupil'] = pp
+            result['pupil3d'] = pupil3d
         # stream the result
         g_pool.pupil_queue.put(result)
 
@@ -266,6 +274,25 @@ def eye(g_pool,cap_src,cap_size):
             draw_named_texture(g_pool.image_tex)
         make_coord_system_pixel_based(frame.img.shape)
 
+        if eye_model3d is not None:
+            eyeball = eye_model3d.get_eyeball_image()
+            pts = cv2.ellipse2Poly( (int(eyeball[0][0]),int(eyeball[0][1])),
+                                    (int(eyeball[1][0]/2),int(eyeball[1][1]/2)),
+                                    int(eyeball[2]),0,360,15)
+            draw_gl_polyline(pts,(0,1.,0,.5))
+            for i in range(len(eye_model3d.pupils)):
+                #if not eye_model3d.pupils[i].init_valid:
+                #    continue
+                ellipse = eye_model3d.pupils[i].ellipse
+                pts = cv2.ellipse2Poly( (int(ellipse[0][0]),int(ellipse[0][1])),
+                                        (int(ellipse[1][0]/2),int(ellipse[1][1]/2)),
+                                        int(ellipse[2]),0,360,15)
+                draw_gl_polyline(pts,(0,0,1.,.5))
+
+                line = eye_model3d.pupil_gazelines_proj[i]
+                origin = line.origin - 2000 * line.direction
+                end = line.origin + 2000 * line.direction
+                draw_gl_polyline(((origin[0,0],origin[1,0]),(end[0,0],end[1,0])),(0,0,1.,.5))
 
         if result['norm_pupil'] is not None and bar.draw_pupil.value:
             if result.has_key('axes'):
@@ -274,6 +301,12 @@ def eye(g_pool,cap_src,cap_size):
                                         int(result["angle"]),0,360,15)
                 draw_gl_polyline(pts,(1.,0,0,.5))
             draw_gl_point_norm(result['norm_pupil'],color=(1.,0.,0.,0.5))
+            if eye_model3d is not None and result.has_key('pupil3d'):
+                pupil3d = result['pupil3d']
+                normal = pupil3d.circle.normal
+                center = pupil3d.circle.center
+                normal_img = eye_model3d.get_normal_image(normal, center)
+                draw_gl_polyline(normal_img,(0,0,1.,.5))
 
         atb.draw()
         glfwSwapBuffers(window)

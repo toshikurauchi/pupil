@@ -18,6 +18,7 @@ from glfw import *
 from OpenGL.GLU import gluOrtho2D
 import calibrate
 from circle_detector import get_canditate_ellipses
+from planarization import EyeModel3D, Pupil3D
 
 from ctypes import c_int,c_bool
 import atb
@@ -38,15 +39,16 @@ def draw_marker(pos):
     pos = int(pos[0]),int(pos[1])
     black = (0.,0.,0.,1.)
     white = (1.,1.,1.,1.)
+    s = 2
     for r,c in zip((50,40,30,20,10),(black,white,black,white,black)):
-        draw_circle(pos,r,c)
+        draw_circle(pos,s*r,c)
 
 
 # window calbacks
 def on_resize(window,w, h):
     active_window = glfwGetCurrentContext()
     glfwMakeContextCurrent(window)
-    adjust_gl_view(w,h,window)
+    adjust_gl_view(w,h)
     glfwMakeContextCurrent(active_window)
 
 
@@ -107,7 +109,9 @@ class Screen_Marker_VOR_Calibration(Plugin):
         self.active = True
         self.ref_list = []
         self.pupil_list = []
+        self.pupil_ellipses = []
         self.window_should_open = True
+        self.img_origin = None
 
     def open_window(self):
         if not self._window:
@@ -165,6 +169,10 @@ class Screen_Marker_VOR_Calibration(Plugin):
             logger.warning("Did not collect enough data.")
             return
 
+        self.g_pool.objs['eye_model3d'] = EyeModel3D(self.pupil_ellipses, self.img_origin)
+
+        logger.info("3D eye model initialized.")
+
         cal_pt_cloud = np.array(cal_pt_cloud)
         map_fn = calibrate.get_map_from_cloud(cal_pt_cloud,self.world_size)
         self.g_pool.map_pupil = map_fn
@@ -186,6 +194,9 @@ class Screen_Marker_VOR_Calibration(Plugin):
 
         if self.active:
             img = frame.img
+            if self.img_origin is None:
+                h,w = img.shape[0], img.shape[1]
+                self.img_origin = (w/2,h/2)
 
             #get world image size for error fitting later.
             if self.world_size is None:
@@ -202,7 +213,15 @@ class Screen_Marker_VOR_Calibration(Plugin):
                 self.detected= True
                 marker_pos = self.candidate_ellipses[0][0]
                 self.pos = normalize(marker_pos,(img.shape[1],img.shape[0]),flip_y=True)
-
+                self.prev_img = img
+            elif self.detected: #was detected on the previous frame
+                prev_pos = np.array([denormalize(self.pos,(img.shape[1],img.shape[0]),flip_y=True)],dtype=np.float32)
+                new_pos, st, err = cv2.calcOpticalFlowPyrLK(self.prev_img, img, prev_pos)
+                if st[0]:
+                    self.pos = normalize(new_pos[0],(img.shape[1],img.shape[0]),flip_y=True)
+                else:
+                    self.detected = False
+                self.prev_img = img
             else:
                 self.detected = False
                 self.pos = None #indicate that no reference is detected
@@ -214,10 +233,19 @@ class Screen_Marker_VOR_Calibration(Plugin):
                 ref["timestamp"] = frame.timestamp
                 self.ref_list.append(ref)
 
-            #always save pupil positions
+            last_p_pt = None
             for p_pt in recent_pupil_positions:
                 if p_pt['norm_pupil'] is not None:
-                    self.pupil_list.append(p_pt)
+                    # Store all pupil ellipses for 3D eye model fitting
+                    if p_pt['confidence'] > 0.8 and p_pt.has_key('axes'):
+                        ellipse = (p_pt['center'], p_pt['axes'], p_pt['angle'])
+                        self.pupil_ellipses.append(Pupil3D(None, ellipse, False))
+                    # Use only the last position for calibration (because the
+                    # eye is moving the previous positions are not related to
+                    # the current target position)
+                    last_p_pt = p_pt
+            if self.detected and last_p_pt is not None:
+                self.pupil_list.append(last_p_pt)
 
 
     def gl_display(self):
