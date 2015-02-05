@@ -53,10 +53,10 @@ def on_resize(window,w, h):
 
 
 class Screen_Marker_VOR_Calibration(Plugin):
-    """Calibrate using a marker on your screen
+    """
+    Calibrate using a marker on your screen
     We use a ring detector that moves across the screen to 9 sites
     Points are collected at sites not between
-
     """
     def __init__(self, g_pool, atb_pos=(0,0)):
         Plugin.__init__(self)
